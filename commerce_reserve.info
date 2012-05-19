@@ -1,0 +1,12 @@
+name = Commerce Reservation
+description = Allow a user to make a reservation for a product.
+core = 7.x
+package = Commerce (contrib)
+dependencies[] = commerce
+dependencies[] = commerce_product
+dependencies[] = views
+
+files[] = commerce_reserve.module
+files[] = includes/views/handlers/commerce_reserve_handler_field_product_link_delete.inc
+
+

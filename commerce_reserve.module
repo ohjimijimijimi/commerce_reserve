@@ -1,0 +1,189 @@
+<?php
+
+/**
+ * @file
+ * Provides reservation functionalities for Druapal Commerce.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function commerce_reserve_menu() {
+	$items = array();
+
+	$items['user/%user/reservations/delete/%'] = array(
+		'page callback' => 'commerce_reserve_delete',
+		'page arguments' => array(1, 4),
+		'access callback' => 'commerce_reserve_access',
+		'access arguments' => array(1, 4),
+		'type' => MENU_CALLBACK,
+	);
+
+	return $items;
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function commerce_reserve_views_api() {
+	return array(
+		'api' => 3,
+		'path' => drupal_get_path('module', 'commerce_reserve') . '/includes/views',
+	);
+}
+
+/**
+ * Implements hook_permission().
+ */
+function commerce_reserve_permission() {
+	return array(
+		'view own reservations' => array(
+			'title' => t('View own reservations'),
+			'description' => t('Allows a user to see their own reservations.'),
+		),
+		'administer reservations' => array(
+			'title' => t('Administer reservations'),
+			'description' => t('Allows users to perform any action on reservations. <em>Warning: Give to trusted roles only; this permission has security implications.</em>'),
+		),
+	);
+}
+
+/**
+ * Implements hook_commerce_cart_product_add().
+ */
+function commerce_reserve_commerce_cart_product_add($order, $product, $quantity, $line_item) {
+	// When add product to cart delete product from reserve
+	db_delete('commerce_reserve')
+		->condition(db_and()
+				->condition('uid', $order->uid)
+				->condition('product_id', $product->product_id)
+				)
+		->execute();
+}
+
+/**
+ * Determine whether the user has a given privilege to reservations.
+ */
+function commerce_reserve_access($user, $reservation_id = '') {
+	if (user_access('administer reservations')) return TRUE;
+
+	if (isset($reservation_id)) {
+		$result = db_select('commerce_reserve', 'cw')
+			->addTag('reservation')
+			->fields('cw', array('uid'))
+			->condition('reservation_id', $reservation_id)
+			->execute()
+			->fetchAssoc();
+	}
+
+	if ($result['uid'] == $user->uid && user_access('view own reservations')) return TRUE;
+
+	return FALSE;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function commerce_reserve_form_alter(&$form, &$form_state, $form_id) {
+	if (strstr($form_id, 'commerce_cart_add_to_cart_form')) {
+		if (isset($form_state['build_info']['args'][0]->data['context']['view'])) {
+			if ($form_state['build_info']['args'][0]->data['context']['view']['view_name'] == 'reservations') {
+				return;
+			}
+		}
+
+		$form += commerce_reserve_add_form();
+	}
+}
+
+/**
+ * Form callback for add a new button of commerce_cart_add_to_cart_form()
+ */
+function commerce_reserve_add_form() {
+	$form['make_reservation'] = array(
+		'#type' => 'submit',
+		'#value' => t('Make a Reservation'),
+		'#attributes' => array('class' => array('reservation')),
+		'#validate' => array('commerce_reserve_add_form_validate'),
+		'#submit' => array('commerce_reserve_add_form_submit'),
+	);
+
+	return $form;
+}
+
+/**
+ * Validate callback for commerce_cart_add_to_cart_form().
+ */
+function commerce_reserve_add_form_validate($form, &$form_state) {
+	global $user;
+	if ($form_state['values']['op'] == t('Make a Reservation')) {
+		// Verify if is a registed user_access
+		if (!$user->uid) {
+			form_set_error('make_reservation',
+				t('<a href="@login">Log in</a> or <a href="@register">register</a> to make a reservation.',
+					array('@login' => url('user/login', array('query' => drupal_get_destination())), '@register' => url('user/register'))
+				)
+			);
+		}
+
+		// Verify if this prodcut has been reserved.
+		$conditions = db_and();
+		$conditions->condition('uid', $user->uid);
+		$conditions->condition('product_id', $form_state['values']['product_id']);
+
+		if (isset($form_state['build_info']['args'][2]['entity'])) {
+			$conditions->condition('nid', $form_state['build_info']['args'][2]['entity']->nid);
+		}
+
+		$result = db_select('commerce_reserve', 'cw')
+			->addTag('reserviation')
+			->fields('cw', array('reservation_id'))
+			->condition($conditions)
+			->execute()
+			->fetchAssoc();
+
+		if (isset($result['reservation_id'])) {
+			form_set_error('make_reservation', t('This product is already reserved.'));
+		}
+	}
+}
+
+/**
+ * Submit callback for commerce_cart_add_to_cart_form().
+ *
+ * Override of commerce_cart_add_to_cart_form_sumbit to add reserve adicional function
+ */
+function commerce_reserve_add_form_submit($form, &$form_state) {
+	global $user;
+
+	if ($form_state['values']['op'] == t('Make a Reservation')) {
+		$fields = array('uid' => $user->uid, 'product_id' => $form_state['values']['product_id'], 'quantity' => $form_state['values']['quantity']);
+		if (isset($form_state['build_info']['args'][2]['entity']->nid)) {
+			$fields['nid'] = $form_state['build_info']['args'][2]['entity']->nid;
+		}
+
+		db_insert('commerce_reserve')
+			->fields($fields)
+			->execute();
+
+		$title = (isset($form_state['build_info']['args'][2]['entity']->title)) ? $form_state['build_info']['args'][2]['entity']->title : $form_state['build_info']['args'][0]->line_item_label;
+
+		drupal_set_message(t('%title <a href="!url">reserved</a>.', array('%title' => $title, '!url' => url('user/'. $user->uid .'/reservations'))));
+	} else {
+		commerce_cart_add_to_cart_form_submit($form, $form_state);
+	}
+}
+
+/**
+ * Access callback: Delete the reserved product
+ */
+function commerce_reserve_delete($user, $reservation_id) {
+	db_delete('commerce_reserve')
+		->condition('reservation_id', $reservation_id)
+		->execute();
+
+	drupal_set_message(t('The product has been deleted from your reservation.'));
+	drupal_goto('user/'. $user->uid .'/reservations');
+}
+
+
